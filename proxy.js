@@ -3,7 +3,7 @@ const httpProxy = require('http-proxy');
 
 const proxy = httpProxy.createProxyServer({});
 const REMOTE_OLLAMA = 'http://192.168.5.215:11434'; 
-const LOCAL_OLLAMA = 'http://ollama-local:11434';
+const LOCAL_OLLAMA = 'http://localhost:11434';
 
 const server = http.createServer((req, res) => {
   const check = http.get(`${REMOTE_OLLAMA}/api/tags`, { timeout: 1200 }, (remoteRes) => {

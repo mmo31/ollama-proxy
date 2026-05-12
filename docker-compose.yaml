@@ -3,6 +3,7 @@ services:
   ollama-local:
     image: ollama/ollama:latest
     container_name: ollama-local-nas
+    network_mode: host
     volumes:
       - ./ollama_data:/root/.ollama
     restart: always
@@ -20,8 +21,6 @@ services:
     build: .
     container_name: ollama-proxy
     network_mode: host
-    ports:
-      - "11430:11430"
     depends_on:
       - ollama-local
     restart: always
