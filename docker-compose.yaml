@@ -1,0 +1,26 @@
+services:
+  # Instance Ollama principale sur le NAS
+  ollama-local:
+    image: ollama/ollama:latest
+    container_name: ollama-local-nas
+    volumes:
+      - ./ollama_data:/root/.ollama
+    restart: always
+
+  # Service éphémère pour garantir le pull de tinyllama
+  ollama-puller:
+    image: curlimages/curl:latest
+    container_name: ollama-puller
+    depends_on:
+      - ollama-local
+    entrypoint: [ "sh", "-c", "sleep 5 && curl -X POST http://ollama-local:11434/api/pull -d '{\"name\": \"tinyllama\"}'" ]
+
+  # Le Proxy Node.js
+  ollama-proxy:
+    build: .
+    container_name: ollama-proxy
+    ports:
+      - "11430:11430"
+    depends_on:
+      - ollama-local
+    restart: always
