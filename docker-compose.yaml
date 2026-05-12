@@ -19,6 +19,7 @@ services:
   ollama-proxy:
     build: .
     container_name: ollama-proxy
+    network_mode: host
     ports:
       - "11430:11430"
     depends_on:
