@@ -6,12 +6,15 @@ const OLLAMA_INF_PORT = 11434;
 const OLLAMA_MGMT_PORT = 3000; 
 const PROXY_PORT = 11430;
 
-// URLS DE L'API PC (Basées sur ton historique)
+// URLS DE L'API PC
 const MGMT_BASE = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/`;
-const MGMT_START = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/ollama/start`; // URL mise à jour
-const MGMT_STOP = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/ollama/stop`;   // URL mise à jour
+const MGMT_START = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/ollama/start`;
+const MGMT_STOP = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/ollama/stop`;
 const OLLAMA_TAGS = `http://${PC_IP}:${OLLAMA_INF_PORT}/api/tags`;
 const UPSNAP_URL = 'http://192.168.2.80:8090/api/nodes/mathieu-rtx/wake';
+
+// SECURITE : Suivi de l'état logique
+let lastCommandWasStop = false;
 
 const debugLog = (ctx, msg) => console.log(`[${new Date().toLocaleTimeString()}] [${ctx}] ${msg}`);
 
@@ -52,7 +55,8 @@ const server = http.createServer((req, res) => {
                     const ollamaCheck = await verboseFetch(OLLAMA_TAGS, 'GET');
                     
                     let msg = `🖥️ **PC (Bressols)** : ${pcCheck.ok ? "ALLUMÉ ✅" : "ÉTEINT ❌"}\n`;
-                    msg += `🦙 **Ollama (RTX)** : ${ollamaCheck.ok ? "PRÊT ✅" : "ARRÊTÉ ❌"}`;
+                    msg += `🦙 **Ollama (RTX)** : ${ollamaCheck.ok ? "PRÊT ✅" : "ARRÊTÉ ❌"}\n`;
+                    msg += `🛡️ **Proxy Logic** : ${lastCommandWasStop ? "STOPPED ⛔" : "RUNNING ▶️"}`;
                     
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
@@ -61,21 +65,18 @@ const server = http.createServer((req, res) => {
                 // --- COMMANDE START ---
                 if (cmd.includes("START")) {
                     debugLog('CMD', 'START Sequence');
+                    lastCommandWasStop = false; // On réactive le flux logique
+                    
                     const pcCheck = await verboseFetch(MGMT_BASE, 'GET');
-
                     if (pcCheck.ok) {
-                        debugLog('START', 'PC OK, envoi start-ollama (POST + GET)');
-                        // On tente les deux pour être sûr de matcher le script PM2
                         await verboseFetch(MGMT_START, 'POST');
                         await verboseFetch(MGMT_START, 'GET');
-                        
-                        const msg = "✅ Commande de lancement envoyée au gestionnaire Ollama.";
+                        const msg = "✅ Commande de lancement envoyée. Inférence débloquée.";
                         res.writeHead(200, { 'Content-Type': 'application/json' });
                         return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                     } else {
-                        debugLog('START', 'PC Down, réveil UpSnap');
                         await verboseFetch(UPSNAP_URL, 'POST');
-                        const msg = "⚠️ PC injoignable. Signal de réveil envoyé via UpSnap.";
+                        const msg = "⚠️ PC éteint. Signal envoyé via UpSnap.";
                         res.writeHead(200, { 'Content-Type': 'application/json' });
                         return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                     }
@@ -84,14 +85,25 @@ const server = http.createServer((req, res) => {
                 // --- COMMANDE STOP ---
                 if (cmd.includes("STOP")) {
                     debugLog('CMD', 'STOP Sequence');
+                    lastCommandWasStop = true; // On bloque le flux logique
+                    
                     await verboseFetch(MGMT_STOP, 'POST');
                     await verboseFetch(MGMT_STOP, 'GET');
-                    const msg = "🛑 Commande d'arrêt envoyée à la RTX.";
+                    const msg = "🛑 Commande d'arrêt envoyée. Inférence verrouillée sur le proxy.";
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                 }
 
-                // --- PROXY INFERENCE STANDARD ---
+                // --- PROXY INFERENCE AVEC VERIFICATION STOP ---
+                if (lastCommandWasStop) {
+                    debugLog('SECURITY', 'Inférence bloquée : La dernière commande était STOP.');
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    return res.end(JSON.stringify({ 
+                        message: { role: "assistant", content: "⛔ Le service est en mode 'STOP'. Tape START pour réactiver l'inférence." }, 
+                        done: true 
+                    }));
+                }
+
                 const proxyReq = http.request({
                     host: PC_IP, port: OLLAMA_INF_PORT, path: req.url, method: 'POST',
                     headers: req.headers, timeout: 5000 
@@ -101,7 +113,7 @@ const server = http.createServer((req, res) => {
                 });
                 proxyReq.on('error', () => {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ message: { role: "assistant", content: "Ollama est éteint. Tape START." }, done: true }));
+                    res.end(JSON.stringify({ message: { role: "assistant", content: "Ollama ne répond pas. Tape START." }, done: true }));
                 });
                 proxyReq.write(body);
                 proxyReq.end();
@@ -119,4 +131,4 @@ const server = http.createServer((req, res) => {
     }
 });
 
-server.listen(PROXY_PORT, () => console.log(`[OK] Proxy configuré sur ${PROXY_PORT} avec URLs spécifiques.`));
+server.listen(PROXY_PORT, () => console.log(`[OK] Proxy sécurisé sur ${PROXY_PORT}`));
