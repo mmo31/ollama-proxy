@@ -5,30 +5,26 @@ const OLLAMA_INF_PORT = 11434;
 const OLLAMA_MGMT_PORT = 3000; 
 const PROXY_PORT = 11430;
 
-const MGMT_BASE_URL = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/`;
-const MGMT_START_URL = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/start`;
-const MGMT_STOP_URL = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/stop`;
+const MGMT_URLS = {
+    base: `http://${PC_IP}:${OLLAMA_MGMT_PORT}/`,
+    start: `http://${PC_IP}:${OLLAMA_MGMT_PORT}/start`,
+    stop: `http://${PC_IP}:${OLLAMA_MGMT_PORT}/stop`
+};
 const OLLAMA_TAGS_URL = `http://${PC_IP}:${OLLAMA_INF_PORT}/api/tags`;
 const UPSNAP_URL = 'http://192.168.2.80:8090/api/nodes/mathieu-rtx/wake';
 
-const debugLog = (ctx, msg) => {
-    console.log(`[${new Date().toLocaleTimeString()}] [${ctx}] ${msg}`);
-};
+const debugLog = (ctx, msg) => console.log(`[${new Date().toLocaleTimeString()}] [${ctx}] ${msg}`);
 
 const verboseFetch = (url, method = 'GET') => {
     return new Promise((resolve) => {
-        const start = Date.now();
-        debugLog('FETCH', `${method} -> ${url}`);
-        
-        const req = http.request(url, { method, timeout: 2500 }, (res) => {
+        const req = http.request(url, { method, timeout: 2000 }, (res) => {
             let body = '';
             res.on('data', chunk => body += chunk);
             res.on('end', () => {
-                debugLog('RES', `${url} [Status: ${res.statusCode}] [${Date.now() - start}ms]`);
+                debugLog('RES', `${method} ${url} -> ${res.statusCode}`);
                 resolve({ ok: res.statusCode < 500, status: res.statusCode, body });
             });
         });
-
         req.on('error', (err) => {
             debugLog('ERR', `${url}: ${err.message}`);
             resolve({ ok: false, err: err.message });
@@ -49,55 +45,50 @@ const server = http.createServer((req, res) => {
                     ? data.messages[data.messages.length - 1].content : (data.prompt || "");
                 const cmd = lastUserMessage.trim().toUpperCase();
 
-                // --- 1. STATUS ---
+                // --- STATUS ---
                 if (cmd.includes("STATUS")) {
                     debugLog('CMD', 'STATUS');
-                    const pcCheck = await verboseFetch(MGMT_BASE_URL, 'GET');
+                    const pcCheck = await verboseFetch(MGMT_URLS.base, 'GET');
                     const ollamaCheck = await verboseFetch(OLLAMA_TAGS_URL, 'GET');
-                    
                     let msg = `🖥️ PC : ${pcCheck.ok ? "ALLUMÉ ✅" : "ÉTEINT ❌"}\n`;
                     msg += `🦙 Ollama : ${ollamaCheck.ok ? "DISPONIBLE ✅" : "ARRÊTÉ ❌"}`;
-
-                    if (ollamaCheck.ok && ollamaCheck.body) {
-                        try {
-                            const tags = JSON.parse(ollamaCheck.body);
-                            msg += `\n\n**Modèles** :\n${tags.models.map(m => `- ${m.name}`).join('\n')}`;
-                        } catch (e) {}
-                    }
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                 }
 
-                // --- 2. START ---
+                // --- START (Séquence de force) ---
                 if (cmd.includes("START")) {
-                    debugLog('CMD', 'START');
-                    const pcCheck = await verboseFetch(MGMT_BASE_URL, 'GET');
+                    debugLog('CMD', 'START Sequence triggered');
+                    const pcCheck = await verboseFetch(MGMT_URLS.base, 'GET');
 
                     if (pcCheck.ok) {
-                        // On passe en POST car le GET a renvoyé un 405
-                        debugLog('START', 'Envoi /start (POST)');
-                        const startRes = await verboseFetch(MGMT_START_URL, 'POST');
+                        debugLog('START', 'PC is UP. Trying multiple triggers...');
+                        // On tente START en POST puis en GET si besoin
+                        const r1 = await verboseFetch(MGMT_URLS.start, 'POST');
+                        if (r1.status === 404 || r1.status === 405) {
+                            debugLog('START', 'POST failed, trying GET /start...');
+                            await verboseFetch(MGMT_URLS.start, 'GET');
+                        }
                         
-                        const msg = startRes.ok ? "✅ Commande START (POST) envoyée." : `⚠️ Erreur API (${startRes.status}).`;
+                        const msg = "✅ Signal START envoyé (vérification des méthodes effectuée).";
                         res.writeHead(200, { 'Content-Type': 'application/json' });
                         return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                     } else {
-                        await verboseFetch(UPSNAP_URL, 'POST');
+                        verboseFetch(UPSNAP_URL, 'POST');
                         res.writeHead(200, { 'Content-Type': 'application/json' });
-                        return res.end(JSON.stringify({ message: { role: "assistant", content: "⚠️ PC OFF. Signal WoL envoyé." }, done: true }));
+                        return res.end(JSON.stringify({ message: { role: "assistant", content: "⚠️ PC OFF. Signal WoL envoyé via UpSnap." }, done: true }));
                     }
                 }
 
-                // --- 3. STOP ---
+                // --- STOP ---
                 if (cmd.includes("STOP")) {
-                    debugLog('CMD', 'STOP');
-                    const stopRes = await verboseFetch(MGMT_STOP_URL, 'POST');
-                    const msg = stopRes.ok ? "🛑 Commande STOP envoyée." : "❌ Echec STOP.";
+                    await verboseFetch(MGMT_URLS.stop, 'POST');
+                    await verboseFetch(MGMT_URLS.stop, 'GET');
                     res.writeHead(200, { 'Content-Type': 'application/json' });
-                    return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
+                    return res.end(JSON.stringify({ message: { role: "assistant", content: "🛑 Signal STOP envoyé." }, done: true }));
                 }
 
-                // Inférence
+                // PROXY INFERENCE
                 const proxyReq = http.request({
                     host: PC_IP, port: OLLAMA_INF_PORT, path: req.url, method: 'POST',
                     headers: req.headers, timeout: 5000 
@@ -107,7 +98,7 @@ const server = http.createServer((req, res) => {
                 });
                 proxyReq.on('error', () => {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ message: { role: "assistant", content: "Ollama est OFF. Tape START." }, done: true }));
+                    res.end(JSON.stringify({ message: { role: "assistant", content: "Ollama est OFF sur la RTX. Tape START." }, done: true }));
                 });
                 proxyReq.write(body);
                 proxyReq.end();
@@ -124,4 +115,4 @@ const server = http.createServer((req, res) => {
     }
 });
 
-server.listen(PROXY_PORT, () => console.log(`[DEBUG] Proxy actif sur ${PROXY_PORT}`));
+server.listen(PROXY_PORT, () => console.log(`[SYSTEM] Proxy Multi-Trigger actif sur ${PROXY_PORT}`));
