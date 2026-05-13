@@ -8,8 +8,8 @@ const PROXY_PORT = 11430;
 
 // URLS DE L'API PC (Basées sur ton historique)
 const MGMT_BASE = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/`;
-const MGMT_START = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/start-ollama`; // URL mise à jour
-const MGMT_STOP = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/stop-ollama`;   // URL mise à jour
+const MGMT_START = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/ollama/start`; // URL mise à jour
+const MGMT_STOP = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/ollama/stop`;   // URL mise à jour
 const OLLAMA_TAGS = `http://${PC_IP}:${OLLAMA_INF_PORT}/api/tags`;
 const UPSNAP_URL = 'http://192.168.2.80:8090/api/nodes/mathieu-rtx/wake';
 
