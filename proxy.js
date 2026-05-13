@@ -5,7 +5,6 @@ const OLLAMA_INF_PORT = 11434;
 const OLLAMA_MGMT_PORT = 3000; 
 const PROXY_PORT = 11430;
 
-// Utilisation stricte du GET comme prévu dans ton script PM2 initial
 const MGMT_BASE_URL = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/`;
 const MGMT_START_URL = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/start`;
 const MGMT_STOP_URL = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/stop`;
@@ -26,7 +25,6 @@ const verboseFetch = (url, method = 'GET') => {
             res.on('data', chunk => body += chunk);
             res.on('end', () => {
                 debugLog('RES', `${url} [Status: ${res.statusCode}] [${Date.now() - start}ms]`);
-                // Un PC est "UP" si le serveur répond, même avec une erreur 404/405
                 resolve({ ok: res.statusCode < 500, status: res.statusCode, body });
             });
         });
@@ -51,6 +49,7 @@ const server = http.createServer((req, res) => {
                     ? data.messages[data.messages.length - 1].content : (data.prompt || "");
                 const cmd = lastUserMessage.trim().toUpperCase();
 
+                // --- 1. STATUS ---
                 if (cmd.includes("STATUS")) {
                     debugLog('CMD', 'STATUS');
                     const pcCheck = await verboseFetch(MGMT_BASE_URL, 'GET');
@@ -69,36 +68,36 @@ const server = http.createServer((req, res) => {
                     return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                 }
 
+                // --- 2. START ---
                 if (cmd.includes("START")) {
                     debugLog('CMD', 'START');
                     const pcCheck = await verboseFetch(MGMT_BASE_URL, 'GET');
 
                     if (pcCheck.ok) {
-                        // FORCE GET ici pour correspondre à ton app Express
-                        debugLog('START', 'PC répond, envoi /start (GET)');
-                        const startRes = await verboseFetch(MGMT_START_URL, 'GET');
+                        // On passe en POST car le GET a renvoyé un 405
+                        debugLog('START', 'Envoi /start (POST)');
+                        const startRes = await verboseFetch(MGMT_START_URL, 'POST');
                         
-                        const msg = (startRes.status === 200 || startRes.status === 404) 
-                            ? "✅ Commande START envoyée au PC." 
-                            : `⚠️ Réponse inattendue de l'API (${startRes.status}).`;
-                        
+                        const msg = startRes.ok ? "✅ Commande START (POST) envoyée." : `⚠️ Erreur API (${startRes.status}).`;
                         res.writeHead(200, { 'Content-Type': 'application/json' });
                         return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                     } else {
                         await verboseFetch(UPSNAP_URL, 'POST');
                         res.writeHead(200, { 'Content-Type': 'application/json' });
-                        return res.end(JSON.stringify({ message: { role: "assistant", content: "⚠️ PC injoignable. Signal WoL envoyé." }, done: true }));
+                        return res.end(JSON.stringify({ message: { role: "assistant", content: "⚠️ PC OFF. Signal WoL envoyé." }, done: true }));
                     }
                 }
 
+                // --- 3. STOP ---
                 if (cmd.includes("STOP")) {
                     debugLog('CMD', 'STOP');
-                    const stopRes = await verboseFetch(MGMT_STOP_URL, 'GET');
-                    const msg = stopRes.ok ? "🛑 Commande STOP envoyée." : "❌ Echec de l'envoi STOP.";
+                    const stopRes = await verboseFetch(MGMT_STOP_URL, 'POST');
+                    const msg = stopRes.ok ? "🛑 Commande STOP envoyée." : "❌ Echec STOP.";
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                 }
 
+                // Inférence
                 const proxyReq = http.request({
                     host: PC_IP, port: OLLAMA_INF_PORT, path: req.url, method: 'POST',
                     headers: req.headers, timeout: 5000 
