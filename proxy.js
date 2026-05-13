@@ -6,7 +6,7 @@ const OLLAMA_INF_PORT = 11434;
 const OLLAMA_MGMT_PORT = 3000; 
 const PROXY_PORT = 11430;
 
-// CONFIGURATION DES URLS DE GESTION
+// CONFIGURATION DES URLS
 const MGMT_START_URL = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/start`;
 const MGMT_STOP_URL = `http://${PC_IP}:${OLLAMA_MGMT_PORT}/stop`;
 const UPSNAP_URL = 'http://192.168.2.80:8090/api/nodes/mathieu-rtx/wake';
@@ -18,8 +18,6 @@ const server = http.createServer((req, res) => {
         req.on('end', async () => {
             try {
                 const data = JSON.parse(body);
-                
-                // Extraction du dernier message uniquement
                 let lastUserMessage = (data.messages && data.messages.length > 0) 
                     ? data.messages[data.messages.length - 1].content : (data.prompt || "");
                 
@@ -27,32 +25,47 @@ const server = http.createServer((req, res) => {
 
                 // --- GESTION DU START ---
                 if (cmd.includes("START")) {
-                    console.log(`[${new Date().toLocaleTimeString()}] COMMANDE START : Appel API Port 3000...`);
+                    console.log(`\n[${new Date().toLocaleTimeString()}] >>> ACTION: START`);
+                    console.log(`[LOG] Tentative d'appel API de gestion : ${MGMT_START_URL}`);
 
                     const callStartApi = () => {
                         return new Promise((resolve) => {
-                            const request = http.get(MGMT_START_URL, { timeout: 1500 }, (r) => {
-                                resolve(r.statusCode < 500); 
+                            const startReq = http.get(MGMT_START_URL, { timeout: 2000 }, (apiRes) => {
+                                console.log(`[LOG] Réponse API Management : Status ${apiRes.statusCode}`);
+                                resolve(apiRes.statusCode < 500);
                             });
-                            request.on('error', () => resolve(false));
-                            request.end();
+                            
+                            startReq.on('error', (err) => {
+                                console.log(`[LOG] Erreur API Management (PC probablement OFF) : ${err.message}`);
+                                resolve(false);
+                            });
+                            
+                            startReq.on('timeout', () => {
+                                console.log(`[LOG] Timeout sur l'API Management (Port 3000 muet)`);
+                                startReq.destroy();
+                                resolve(false);
+                            });
                         });
                     };
 
                     const apiSuccess = await callStartApi();
 
                     if (apiSuccess) {
-                        const msg = "Ordre envoyé : Le service Ollama est en cours de lancement sur le PC RTX (via Port 3000).";
+                        console.log(`[LOG] Succès : Ordre de lancement transmis au PC.`);
+                        const msg = "✅ PC en ligne. L'ordre de lancement 'ollama serve' a été transmis au gestionnaire (Port 3000).";
                         res.writeHead(200, { 'Content-Type': 'application/json' });
                         return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                     } else {
-                        // Si l'API 3000 est injoignable, on réveille le PC
-                        console.log(" -> PC injoignable, appel UpSnap...");
-                        const upSnapReq = http.request(UPSNAP_URL, { method: 'POST' });
-                        upSnapReq.on('error', (e) => console.log("Error UpSnap:", e.message));
+                        console.log(`[LOG] Echec API : Déclenchement UpSnap pour réveil matériel...`);
+                        
+                        const upSnapReq = http.request(UPSNAP_URL, { method: 'POST' }, (uRes) => {
+                            console.log(`[LOG] UpSnap a répondu avec le code : ${uRes.statusCode}`);
+                        });
+                        
+                        upSnapReq.on('error', (e) => console.log(`[LOG] ERREUR CRITIQUE UPSNAP : ${e.message}`));
                         upSnapReq.end();
 
-                        const msg = "Le PC semble éteint. Signal de réveil envoyé via UpSnap. Patiente 1 min puis relance START.";
+                        const msg = "⚠️ PC injoignable. J'ai envoyé un signal de réveil WoL via UpSnap. Attends 1 min que Windows boot, puis relance START.";
                         res.writeHead(200, { 'Content-Type': 'application/json' });
                         return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                     }
@@ -60,40 +73,34 @@ const server = http.createServer((req, res) => {
 
                 // --- GESTION DU STOP ---
                 if (cmd.includes("STOP")) {
-                    console.log(`[${new Date().toLocaleTimeString()}] COMMANDE STOP : Appel API Port 3000...`);
-
+                    console.log(`\n[${new Date().toLocaleTimeString()}] >>> ACTION: STOP`);
                     const callStopApi = () => {
                         return new Promise((resolve) => {
-                            const request = http.get(MGMT_STOP_URL, { timeout: 1500 }, (r) => {
-                                resolve(r.statusCode < 500);
-                            });
-                            request.on('error', () => resolve(false));
-                            request.end();
+                            http.get(MGMT_STOP_URL, (r) => resolve(r.statusCode < 500))
+                                .on('error', () => resolve(false));
                         });
                     };
-
                     const stopped = await callStopApi();
-                    const msg = stopped ? "Ordre envoyé : Le processus Ollama est en cours d'arrêt." : "Impossible de joindre le service de gestion (PC peut-être déjà éteint).";
-                    
+                    console.log(`[LOG] Résultat Stop : ${stopped ? "Transmis" : "Echec (PC OFF?)"}`);
+                    const msg = stopped ? "🛑 Ordre d'arrêt transmis à la RTX." : "❌ Impossible de joindre le PC pour l'arrêt.";
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     return res.end(JSON.stringify({ message: { role: "assistant", content: msg }, done: true }));
                 }
 
                 // --- PROXY STANDARD (INFÉRENCE) ---
+                console.log(`[${new Date().toLocaleTimeString()}] PROXY: Transfert vers Ollama (11434)...`);
                 const proxyReq = http.request({
-                    host: PC_IP,
-                    port: OLLAMA_INF_PORT,
-                    path: req.url,
-                    method: 'POST',
-                    headers: req.headers,
-                    timeout: 2000 
+                    host: PC_IP, port: OLLAMA_INF_PORT, path: req.url, method: 'POST',
+                    headers: req.headers, timeout: 3000 
                 }, (pcRes) => {
+                    pcRes.on('data', () => {}); // On consomme pour les logs si besoin
                     res.writeHead(pcRes.statusCode, pcRes.headers);
                     pcRes.pipe(res);
                 });
 
                 proxyReq.on('error', () => {
-                    const fallbackMsg = "Le PC ne répond pas sur le port 11434. Utilise START pour l'allumer ou lancer le service.";
+                    console.log(`[LOG] Ollama (11434) ne répond pas.`);
+                    const fallbackMsg = "Service Ollama hors ligne sur la RTX. Utilise START pour l'activer.";
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ message: { role: "assistant", content: fallbackMsg }, done: true }));
                 });
@@ -102,11 +109,12 @@ const server = http.createServer((req, res) => {
                 proxyReq.end();
 
             } catch (e) {
-                res.writeHead(400); res.end("Error Parsing JSON");
+                console.log(`[ERREUR] ${e.message}`);
+                res.writeHead(400); res.end("Error");
             }
         });
     } else {
-        // Redirection des GET (tags/version) vers Ollama 11434
+        // Redirection GET (tags)
         http.get(`http://${PC_IP}:${OLLAMA_INF_PORT}${req.url}`, (pcRes) => pcRes.pipe(res))
             .on('error', () => {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -115,4 +123,4 @@ const server = http.createServer((req, res) => {
     }
 });
 
-server.listen(PROXY_PORT, () => console.log(`Proxy Node actif sur ${PROXY_PORT} (MGMT: 3000, INF: 11434)`));
+server.listen(PROXY_PORT, () => console.log(`[SYSTEM] Proxy Node avec Logs actifs sur port ${PROXY_PORT}`));
